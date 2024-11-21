@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -8,6 +9,11 @@ import (
 
 // Ensures gofmt doesn't remove the "net" import in stage 1 (feel free to remove this!)
 var _ = net.ListenUDP
+
+const (
+	TYPE_A   = 1
+	CLASS_IN = 1
+)
 
 type DNSHeader struct {
 	ID      uint16
@@ -19,6 +25,12 @@ type DNSHeader struct {
 }
 
 const DNSHeaderSize = 12
+
+type DNSQuestion struct {
+	Name  []byte
+	Type  uint16
+	Class uint16
+}
 
 func (h DNSHeader) ToBytes() []byte {
 	headerSlice := make([]byte, DNSHeaderSize)
@@ -32,6 +44,25 @@ func (h DNSHeader) ToBytes() []byte {
 	binary.BigEndian.PutUint16(headerSlice[8:10], h.NSCOUNT)
 	binary.BigEndian.PutUint16(headerSlice[10:12], h.ARCOUNT)
 	return headerSlice
+}
+
+func EncodeDnsName(domainName string) []byte {
+	var encodedDomain []byte
+	parts := bytes.Split([]byte(domainName), []byte("."))
+	for _, part := range parts {
+		encodedDomain = append(encodedDomain, byte(len(part)))
+		encodedDomain = append(encodedDomain, part...)
+	}
+	encodedDomain = append(encodedDomain, 0x00)
+	return encodedDomain
+}
+
+func BuildDNSQuery(domainName string) []byte {
+	var dnsQuery []byte
+	dnsQuery = append(dnsQuery, EncodeDnsName(domainName)...)
+	dnsQuery = binary.BigEndian.AppendUint16(dnsQuery, TYPE_A)
+	dnsQuery = binary.BigEndian.AppendUint16(dnsQuery, CLASS_IN)
+	return dnsQuery
 }
 
 func main() {
@@ -69,16 +100,18 @@ func main() {
 
 		var h DNSHeader
 		h.ID = 1234
-		h.Flags = 1 << 7
-		h.QDCOUNT = 0
-		h.ANCOUNT = 0
-		h.NSCOUNT = 0
-		h.ARCOUNT = 0
+		h.Flags = 0x8000
+		h.QDCOUNT = 1
+		h.ANCOUNT = 0x0000
+		h.NSCOUNT = 0x0000
+		h.ARCOUNT = 0x0000
+
+		dnsQuery := BuildDNSQuery("codecrafters.io")
 
 		response := h.ToBytes()
+		response = append(response, dnsQuery...)
 
-		// binary.BigEndian.PutUint16(response[0:2], 1234)
-		response[2] = 1 << 7
+		// Write the response
 
 		_, err = udpConn.WriteToUDP(response, source)
 
