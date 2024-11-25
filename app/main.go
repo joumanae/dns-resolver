@@ -32,6 +32,15 @@ type DNSQuestion struct {
 	Class uint16
 }
 
+type DNSAnswer struct {
+	Name   []byte
+	Type   uint16
+	Class  uint16
+	TTL    uint32
+	Length uint16
+	Data   []byte
+}
+
 func (h DNSHeader) ToBytes() []byte {
 	headerSlice := make([]byte, DNSHeaderSize)
 
@@ -63,6 +72,23 @@ func BuildDNSQuery(domainName string) []byte {
 	dnsQuery = binary.BigEndian.AppendUint16(dnsQuery, TYPE_A)
 	dnsQuery = binary.BigEndian.AppendUint16(dnsQuery, CLASS_IN)
 	return dnsQuery
+}
+
+func (a DNSAnswer) BuildDNSAnswer(domainName string) []byte {
+	var dnsAnswer []byte
+	a.Type = TYPE_A
+	a.Class = CLASS_IN
+	a.TTL = 60
+	a.Length = 4
+	a.Data = []byte("\x08\x08\x08\x08")
+
+	dnsAnswer = append(dnsAnswer, EncodeDnsName(domainName)...)
+	dnsAnswer = binary.BigEndian.AppendUint16(dnsAnswer, a.Type)
+	dnsAnswer = binary.BigEndian.AppendUint16(dnsAnswer, a.Class)
+	dnsAnswer = binary.BigEndian.AppendUint32(dnsAnswer, a.TTL)
+	dnsAnswer = binary.BigEndian.AppendUint16(dnsAnswer, a.Length)
+	dnsAnswer = binary.BigEndian.AppendUint32(dnsAnswer, binary.BigEndian.Uint32(a.Data))
+	return dnsAnswer
 }
 
 func main() {
@@ -102,15 +128,20 @@ func main() {
 		h.ID = 1234
 		h.Flags = 0x8000
 		h.QDCOUNT = 1
-		h.ANCOUNT = 0x0000
+		h.ANCOUNT = 1
 		h.NSCOUNT = 0x0000
 		h.ARCOUNT = 0x0000
 
 		dnsQuery := BuildDNSQuery("codecrafters.io")
 
-		response := h.ToBytes()
-		response = append(response, dnsQuery...)
+		var a DNSAnswer
 
+		dnsAnswer := a.BuildDNSAnswer("codecrafters.io")
+
+		response := h.ToBytes()
+
+		response = append(response, dnsQuery...)
+		response = append(response, dnsAnswer...)
 		// Write the response
 
 		_, err = udpConn.WriteToUDP(response, source)
