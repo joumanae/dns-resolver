@@ -17,7 +17,7 @@ const (
 
 type DNSHeader struct {
 	ID      uint16
-	Flags   uint16
+	Flags   Flags
 	QDCOUNT uint16
 	ANCOUNT uint16
 	NSCOUNT uint16
@@ -41,13 +41,36 @@ type DNSAnswer struct {
 	Data   []byte
 }
 
+type Flags struct {
+	QRIndicator uint16
+	Opcode      uint16
+	AA          uint16
+	TC          uint16
+	RD          uint16
+	RA          uint16
+	Z           uint16
+	RCode       uint16
+}
+
+const AABitMask uint16 = 0x0400 // Bit 5 corresponds to AA
+
+func (f Flags) SetHeaderFlagsToUint16() uint16 {
+	var flags uint16
+	flags |= (f.QRIndicator << 15)
+	flags |= (f.Opcode << 11)
+	flags |= (f.AA << 10)
+	flags |= (f.TC << 9)
+	flags |= (f.RD << 8)
+	flags |= (f.RA << 7)
+	flags |= (f.Z << 4)
+	flags |= (f.RCode)
+	return flags
+}
+
 func (h DNSHeader) ToBytes() []byte {
 	headerSlice := make([]byte, DNSHeaderSize)
-
-	// BigEndian saves the most significant piece of data at the lowest in memory
-	// Endian is useful when data isn't single-byte. In our case, each element is multiple bytes
-	binary.BigEndian.PutUint16(headerSlice[0:2], 1234)
-	binary.BigEndian.PutUint16(headerSlice[2:4], h.Flags)
+	binary.BigEndian.PutUint16(headerSlice[0:2], h.ID)
+	binary.BigEndian.PutUint16(headerSlice[2:4], h.Flags.SetHeaderFlagsToUint16())
 	binary.BigEndian.PutUint16(headerSlice[4:6], h.QDCOUNT)
 	binary.BigEndian.PutUint16(headerSlice[6:8], h.ANCOUNT)
 	binary.BigEndian.PutUint16(headerSlice[8:10], h.NSCOUNT)
@@ -80,23 +103,23 @@ func (a DNSAnswer) BuildDNSAnswer(domainName string) []byte {
 	a.Class = CLASS_IN
 	a.TTL = 60
 	a.Length = 4
-	a.Data = []byte("\x08\x08\x08\x08")
+	a.Data = []byte{8, 8, 8, 8} // Example: 8.8.8.8 (Google DNS)
 
 	dnsAnswer = append(dnsAnswer, EncodeDnsName(domainName)...)
 	dnsAnswer = binary.BigEndian.AppendUint16(dnsAnswer, a.Type)
 	dnsAnswer = binary.BigEndian.AppendUint16(dnsAnswer, a.Class)
 	dnsAnswer = binary.BigEndian.AppendUint32(dnsAnswer, a.TTL)
 	dnsAnswer = binary.BigEndian.AppendUint16(dnsAnswer, a.Length)
-	dnsAnswer = binary.BigEndian.AppendUint32(dnsAnswer, binary.BigEndian.Uint32(a.Data))
+	dnsAnswer = append(dnsAnswer, a.Data...) // Append raw IP data
 	return dnsAnswer
 }
 
-func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	fmt.Println("Logs from your program will appear here!")
+func ExtractRDCode(buf []byte) uint16 {
+	flags := binary.BigEndian.Uint16(buf[2:4])
+	return (flags >> 8) & 0x1
+}
 
-	// Uncomment this block to pass the first stage
-	//
+func main() {
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
 	if err != nil {
 		fmt.Println("Failed to resolve UDP address:", err)
@@ -109,6 +132,7 @@ func main() {
 		return
 	}
 	defer udpConn.Close()
+	fmt.Println("DNS server is running on 127.0.0.1:2053")
 
 	buf := make([]byte, 512)
 
@@ -116,36 +140,58 @@ func main() {
 		size, source, err := udpConn.ReadFromUDP(buf)
 		if err != nil {
 			fmt.Println("Error receiving data:", err)
-			break
+			continue
 		}
 
-		receivedData := string(buf[:size])
-		fmt.Printf("Received %d bytes from %s: %s\n", size, source, receivedData)
+		fmt.Printf("Received %d bytes from %s\n", size, source)
 
-		// Create an empty response
+		// Extract transaction ID and flags from the query
+		transactionID := binary.BigEndian.Uint16(buf[:2])
 
-		var h DNSHeader
-		h.ID = 1234
-		h.Flags = 0x8000
-		h.QDCOUNT = 1
-		h.ANCOUNT = 1
-		h.NSCOUNT = 0x0000
-		h.ARCOUNT = 0x0000
+		// Prepare DNS header with flags
+		flags := binary.BigEndian.Uint16(buf[2:4])
+		opcode := (flags >> 11) & 0xF
+		rcode := flags & 0xF
+		if opcode != 0 {
+			rcode = 4
+		}
 
+		header := DNSHeader{
+			ID: transactionID,
+			Flags: Flags{
+				QRIndicator: 1, // Response
+				Opcode:      opcode,
+				AA:          0, // Not authoritative
+				TC:          0, // Not truncated
+				RD:          ExtractRDCode(buf),
+				RA:          1, // Recursion not available
+				Z:           0, // Reserved
+				RCode:       rcode,
+			},
+			QDCOUNT: 1,
+			ANCOUNT: 1,
+			NSCOUNT: 0,
+			ARCOUNT: 0,
+		}
+
+		fmt.Printf("Transaction ID: %04x\n", transactionID)
+		fmt.Printf("Flags Byte 1 (data[2]): %08b\n", buf[2])
+		fmt.Printf("Flags Byte 2 (data[3]): %08b\n", buf[3])
+
+		fmt.Printf("Extracted RD: %d\n", ExtractRDCode(buf))
+
+		// Build DNS query and answer
 		dnsQuery := BuildDNSQuery("codecrafters.io")
+		var answer DNSAnswer
+		dnsAnswer := answer.BuildDNSAnswer("codecrafters.io")
 
-		var a DNSAnswer
-
-		dnsAnswer := a.BuildDNSAnswer("codecrafters.io")
-
-		response := h.ToBytes()
-
+		// Construct response
+		response := header.ToBytes() // This calls SetHeaderFlags internally
 		response = append(response, dnsQuery...)
 		response = append(response, dnsAnswer...)
-		// Write the response
 
+		// Send response
 		_, err = udpConn.WriteToUDP(response, source)
-
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
