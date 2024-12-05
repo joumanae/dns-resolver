@@ -174,12 +174,6 @@ func main() {
 			ARCOUNT: 0,
 		}
 
-		fmt.Printf("Transaction ID: %04x\n", transactionID)
-		fmt.Printf("Flags Byte 1 (data[2]): %08b\n", buf[2])
-		fmt.Printf("Flags Byte 2 (data[3]): %08b\n", buf[3])
-
-		fmt.Printf("Extracted RD: %d\n", ExtractRDCode(buf))
-
 		// Build DNS query and answer
 		dnsQuery := BuildDNSQuery("codecrafters.io")
 		var answer DNSAnswer
