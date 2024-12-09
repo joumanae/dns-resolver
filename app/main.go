@@ -15,6 +15,12 @@ const (
 	CLASS_IN = 1
 )
 
+type DNSPacket struct {
+	Header   DNSHeader
+	Question DNSQuestion
+	Answer   DNSAnswer
+}
+
 type DNSHeader struct {
 	ID      uint16
 	Flags   Flags
@@ -119,6 +125,55 @@ func ExtractRDCode(buf []byte) uint16 {
 	return (flags >> 8) & 0x1
 }
 
+func UnmarshalQuestions(buf []byte, count uint16) ([]DNSQuestion, int) {
+	var questions []DNSQuestion
+	offset := 12 // Start of the question section
+	for i := 0; i < int(count); i++ {
+		name, consumed := DecodeDNSName(buf[offset:])
+		offset += consumed
+		question := DNSQuestion{
+			Name:  name,
+			Type:  binary.BigEndian.Uint16(buf[offset : offset+2]),
+			Class: binary.BigEndian.Uint16(buf[offset+2 : offset+4]),
+		}
+		offset += 4 // Move past Type and Class
+		questions = append(questions, question)
+	}
+	return questions, offset
+}
+
+func DecodeDNSName(data []byte) ([]byte, int) {
+	var name []byte
+	offset := 0
+	for {
+		length := int(data[offset])
+		if length == 0 {
+			offset++ // End of name
+			break
+		}
+		offset++
+		name = append(name, data[offset:offset+length]...)
+		name = append(name, '.')
+		offset += length
+	}
+	return name[:len(name)-1], offset // Remove trailing dot
+}
+
+func BuildMultipleDNSAnswers(questions []DNSQuestion) []byte {
+	var answers []byte
+	for _, question := range questions {
+		answer := DNSAnswer{
+			Name:   question.Name,
+			Type:   TYPE_A,
+			Class:  CLASS_IN,
+			TTL:    60,
+			Length: 4,
+			Data:   []byte{127, 0, 0, 1}, // Example: 127.0.0.1
+		}
+		answers = append(answers, answer.BuildDNSAnswer(string(question.Name))...)
+	}
+	return answers
+}
 func main() {
 	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:2053")
 	if err != nil {
@@ -147,6 +202,7 @@ func main() {
 
 		// Extract transaction ID and flags from the query
 		transactionID := binary.BigEndian.Uint16(buf[:2])
+		qdCount := binary.BigEndian.Uint16(buf[4:6])
 
 		// Prepare DNS header with flags
 		flags := binary.BigEndian.Uint16(buf[2:4])
@@ -155,6 +211,8 @@ func main() {
 		if opcode != 0 {
 			rcode = 4
 		}
+		questions, offset := UnmarshalQuestions(buf, qdCount)
+		answers := BuildMultipleDNSAnswers(questions)
 
 		header := DNSHeader{
 			ID: transactionID,
@@ -168,24 +226,18 @@ func main() {
 				Z:           0, // Reserved
 				RCode:       rcode,
 			},
-			QDCOUNT: 1,
-			ANCOUNT: 1,
+			QDCOUNT: uint16(len(questions)), // Match the number of questions
+			ANCOUNT: uint16(len(questions)),
 			NSCOUNT: 0,
 			ARCOUNT: 0,
 		}
 
-		// Build DNS query and answer
-		dnsQuery := BuildDNSQuery("codecrafters.io")
-		var answer DNSAnswer
-		dnsAnswer := answer.BuildDNSAnswer("codecrafters.io")
-
-		// Construct response
-		response := header.ToBytes() // This calls SetHeaderFlags internally
-		response = append(response, dnsQuery...)
-		response = append(response, dnsAnswer...)
+		DNSmessage := header.ToBytes() // This calls SetHeaderFlags internally
+		DNSmessage = append(DNSmessage, buf[12:offset]...)
+		DNSmessage = append(DNSmessage, answers...)
 
 		// Send response
-		_, err = udpConn.WriteToUDP(response, source)
+		_, err = udpConn.WriteToUDP(DNSmessage, source)
 		if err != nil {
 			fmt.Println("Failed to send response:", err)
 		}
