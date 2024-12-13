@@ -59,8 +59,6 @@ type Flags struct {
 	RCode       uint16
 }
 
-const AABitMask uint16 = 0x0400 // Bit 5 corresponds to AA
-
 func (f Flags) SetHeaderFlagsToUint16() uint16 {
 	var flags uint16
 	flags |= (f.QRIndicator << 15)
@@ -105,14 +103,6 @@ func EncodeDnsName(domainName string) []byte {
 	}
 	encodedDomain = append(encodedDomain, 0x00)
 	return encodedDomain
-}
-
-func BuildDNSQuery(domainName string) []byte {
-	var dnsQuery []byte
-	dnsQuery = append(dnsQuery, EncodeDnsName(domainName)...)
-	dnsQuery = binary.BigEndian.AppendUint16(dnsQuery, TYPE_A)
-	dnsQuery = binary.BigEndian.AppendUint16(dnsQuery, CLASS_IN)
-	return dnsQuery
 }
 
 func (a DNSAnswer) BuildDNSAnswer(domainName, ipAddress string) []byte {
@@ -263,6 +253,8 @@ func main() {
 		transactionID := binary.BigEndian.Uint16(buf[:2])
 		qdCount := binary.BigEndian.Uint16(buf[4:6])
 		questions, offset := UnmarshalQuestions(buf, qdCount)
+
+		// try to figure out multiple resolverAddresses from the query
 		answers := BuildMultipleDNSAnswers(questions, *resolverAddress)
 
 		// Prepare DNS header with flags
